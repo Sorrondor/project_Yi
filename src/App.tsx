@@ -199,6 +199,9 @@ export default function App() {
     null,
   );
   const mailFeedbackTimerRef = useRef<number | null>(null);
+  const [isMobileLayout, setIsMobileLayout] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches,
+  );
   const lockRef = useRef(false);
   const dragRef = useRef({
     active: false,
@@ -230,6 +233,14 @@ export default function App() {
         window.clearTimeout(mailFeedbackTimerRef.current);
       }
     };
+  }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 767px)");
+    const updateLayout = () => setIsMobileLayout(media.matches);
+    updateLayout();
+    media.addEventListener("change", updateLayout);
+    return () => media.removeEventListener("change", updateLayout);
   }, []);
 
   const transit = useCallback((next: (current: number) => number) => {
@@ -742,21 +753,37 @@ export default function App() {
             >
               기록지
             </button>
+            {recordPopupOpen && isMobileLayout ? (
+              <button
+                type="button"
+                className="record-popup-backdrop"
+                aria-label="기록지 닫기"
+                onClick={closeRecordPopup}
+              />
+            ) : null}
             {recordPopupOpen ? (
               <section
-                className="record-popup"
-                style={{ left: `${popupPosition.x}px`, top: `${popupPosition.y}px` }}
+                className={`record-popup ${isMobileLayout ? "record-popup-docked" : ""}`}
+                style={
+                  isMobileLayout
+                    ? undefined
+                    : { left: `${popupPosition.x}px`, top: `${popupPosition.y}px` }
+                }
               >
                 <div className="record-popup-head">
-                  <div
-                    className="record-popup-drag"
-                    onPointerDown={onPopupDragStart}
-                    onPointerMove={onPopupDragMove}
-                    onPointerUp={onPopupDragEnd}
-                    onPointerCancel={onPopupDragEnd}
-                  >
-                    <span>기록지 · 자유 메모</span>
-                  </div>
+                  {isMobileLayout ? (
+                    <span className="record-popup-title">기록지 · 자유 메모</span>
+                  ) : (
+                    <div
+                      className="record-popup-drag"
+                      onPointerDown={onPopupDragStart}
+                      onPointerMove={onPopupDragMove}
+                      onPointerUp={onPopupDragEnd}
+                      onPointerCancel={onPopupDragEnd}
+                    >
+                      <span>기록지 · 자유 메모</span>
+                    </div>
+                  )}
                   <button
                     type="button"
                     className="record-popup-close"

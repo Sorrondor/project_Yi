@@ -7,6 +7,7 @@ import {
   loadPublishedIds,
   publishEntry,
   unpublishEntry,
+  deleteEntry,
   type ArchiveEntry,
 } from "./archiveStorage.ts";
 import "./App.css";
@@ -125,27 +126,13 @@ return threshold;`,
     cta: "다음 장으로..",
   },
   {
-    id: "login",
-    kicker: "7 — 인증",
-    title: "입실 절차",
-    lines: [
-      "기록지는 이름 없는 문장을 받지 않습니다.",
-      "아이디와 비밀번호를 입력하면, 다음 장의 여백이 열립니다.",
-    ],
-    mono: `identity = request(id, password);
-if (identity.valid) {
-  access = grant("record-sheet");
-}
-nickname = attach(identity);`,
-    cta: "기록지로 이동",
-  },
-  {
     id: "record",
-    kicker: "8 — 기록지",
+    kicker: "7 — 기록지",
     title: "여백의 페이지",
     lines: [
       "여기는 당신의 문장만 남는 방입니다.",
       "떠오른 생각을 적어 두면, 다음 문을 열어도 잉크의 결은 남아 있습니다.",
+      "카카오톡 공유와 관리자 전송만 입실 절차(로그인)가 필요합니다.",
     ],
     mono: `sheet.open();
 thought = capture(now);
@@ -154,6 +141,22 @@ if (thought.length > 0) {
   trace = "retained";
 }`,
     cta: "보관소로",
+  },
+  {
+    id: "login",
+    kicker: "8 — 인증",
+    title: "입실 절차",
+    lines: [
+      "기록은 로그인 없이 남길 수 있습니다.",
+      "카카오톡으로 보내거나 관리자에게 전달할 때만, 아이디와 비밀번호가 요청됩니다.",
+    ],
+    mono: `identity = request(id, password);
+if (identity.valid) {
+  share.unlock();
+  mail.unlock();
+}
+nickname = attach(identity);`,
+    cta: "기록지로 돌아가기",
   },
   {
     id: "archive",
@@ -173,6 +176,8 @@ vault.reject(rest);`,
 
 const MASTER_ID = "1234";
 const MASTER_PASSWORD = "1234";
+const RECORD_POPUP_WIDTH = 440;
+const RECORD_POPUP_HEIGHT = 340;
 
 export default function App() {
   const [index, setIndex] = useState(0);
@@ -190,6 +195,10 @@ export default function App() {
   const [archiveInbox, setArchiveInbox] = useState<ArchiveEntry[]>([]);
   const [publishedIds, setPublishedIds] = useState<string[]>([]);
   const [archiveNicknameQuery, setArchiveNicknameQuery] = useState("");
+  const [mailFeedback, setMailFeedback] = useState<{ type: "success" | "error"; message: string } | null>(
+    null,
+  );
+  const mailFeedbackTimerRef = useRef<number | null>(null);
   const lockRef = useRef(false);
   const dragRef = useRef({
     active: false,
@@ -201,6 +210,7 @@ export default function App() {
   const returnIndex = ROOMS.findIndex((item) => item.id === "return");
   const loginIndex = ROOMS.findIndex((item) => item.id === "login");
   const recordIndex = ROOMS.findIndex((item) => item.id === "record");
+  const archiveIndex = ROOMS.findIndex((item) => item.id === "archive");
   const firstIndex = ROOMS.findIndex((item) => item.id === "threshold");
   const popupEnabled = returnVisits >= 2;
 
@@ -213,6 +223,14 @@ export default function App() {
     if (room.id !== "archive") return;
     reloadArchive();
   }, [room.id, reloadArchive]);
+
+  useEffect(() => {
+    return () => {
+      if (mailFeedbackTimerRef.current !== null) {
+        window.clearTimeout(mailFeedbackTimerRef.current);
+      }
+    };
+  }, []);
 
   const transit = useCallback((next: (current: number) => number) => {
     if (lockRef.current) return;
@@ -242,8 +260,12 @@ export default function App() {
   }, [transit]);
 
   const goToRecord = useCallback(() => {
-    transit(() => (isLoggedIn ? recordIndex : loginIndex));
-  }, [isLoggedIn, loginIndex, recordIndex, transit]);
+    transit(() => recordIndex);
+  }, [recordIndex, transit]);
+
+  const goToArchive = useCallback(() => {
+    transit(() => archiveIndex);
+  }, [archiveIndex, transit]);
 
   const goToLogin = useCallback(() => {
     transit(() => loginIndex);
@@ -253,8 +275,10 @@ export default function App() {
     transit(() => firstIndex);
   }, [firstIndex, transit]);
 
-  const openRecordPopup = useCallback(() => {
-    setRecordPopupOpen(true);
+  const closeRecordPopup = useCallback(() => {
+    dragRef.current.active = false;
+    dragRef.current.pointerId = -1;
+    setRecordPopupOpen(false);
   }, []);
 
   const goToPage = useCallback(
@@ -284,6 +308,12 @@ export default function App() {
     transit(() => recordIndex);
   }, [recordIndex, submitLogin, transit]);
 
+  const ensureLoggedInForShare = useCallback(() => {
+    if (isLoggedIn) return true;
+    transit(() => loginIndex);
+    return false;
+  }, [isLoggedIn, loginIndex, transit]);
+
   const handleLogout = useCallback(() => {
     setIsLoggedIn(false);
     setLoginPassword("");
@@ -295,18 +325,44 @@ export default function App() {
     return `기록자: ${displayName}\n\n${text}`;
   }, [nickname, note]);
 
+  const showMailFeedback = useCallback((type: "success" | "error", message: string) => {
+    if (mailFeedbackTimerRef.current !== null) {
+      window.clearTimeout(mailFeedbackTimerRef.current);
+    }
+    setMailFeedback({ type, message });
+    mailFeedbackTimerRef.current = window.setTimeout(() => {
+      setMailFeedback(null);
+      mailFeedbackTimerRef.current = null;
+    }, 4500);
+  }, []);
+
   const shareToKakao = useCallback(() => {
+    if (!ensureLoggedInForShare()) return;
     const shareUrl = `https://sharer.kakao.com/talk/friends/picker/link?url=${encodeURIComponent(window.location.href)}&text=${encodeURIComponent(buildRecordText())}`;
     window.open(shareUrl, "_blank", "noopener,noreferrer");
-  }, [buildRecordText]);
+  }, [buildRecordText, ensureLoggedInForShare]);
 
   const sendMailToAdmin = useCallback(() => {
-    appendSubmission(nickname.trim() || "익명", note.trim());
-    reloadArchive();
-    const subject = encodeURIComponent("[기록지 공유] Yi Sang 인터랙티브 기록");
-    const body = encodeURIComponent(buildRecordText());
-    window.location.href = `mailto:astralanima@naver.com?subject=${subject}&body=${body}`;
-  }, [buildRecordText, nickname, note, reloadArchive]);
+    if (!ensureLoggedInForShare()) return;
+    if (!note.trim()) {
+      showMailFeedback("error", "관리자에게 전송에 실패했습니다. 기록 내용을 먼저 작성해 주세요.");
+      return;
+    }
+
+    try {
+      appendSubmission(nickname.trim() || "익명", note.trim());
+      reloadArchive();
+      const subject = encodeURIComponent("[기록지 공유] Yi Sang 인터랙티브 기록");
+      const body = encodeURIComponent(buildRecordText());
+      window.location.href = `mailto:astralanima@naver.com?subject=${subject}&body=${body}`;
+      showMailFeedback(
+        "success",
+        "관리자에게 전송에 성공했습니다. 관리자가 확인한 뒤 선별한 글은 보관소에서 확인할 수 있습니다.",
+      );
+    } catch {
+      showMailFeedback("error", "관리자에게 전송에 실패했습니다. 잠시 후 다시 시도해 주세요.");
+    }
+  }, [buildRecordText, ensureLoggedInForShare, nickname, note, reloadArchive, showMailFeedback]);
 
   const handlePublishArchive = useCallback(
     (id: string) => {
@@ -319,6 +375,14 @@ export default function App() {
   const handleUnpublishArchive = useCallback(
     (id: string) => {
       unpublishEntry(id);
+      reloadArchive();
+    },
+    [reloadArchive],
+  );
+
+  const handleDeleteArchive = useCallback(
+    (id: string) => {
+      deleteEntry(id);
       reloadArchive();
     },
     [reloadArchive],
@@ -341,8 +405,8 @@ export default function App() {
   const onPopupDragMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     if (!dragRef.current.active || dragRef.current.pointerId !== event.pointerId) return;
 
-    const panelWidth = 360;
-    const panelHeight = 340;
+    const panelWidth = RECORD_POPUP_WIDTH;
+    const panelHeight = RECORD_POPUP_HEIGHT;
     const maxX = Math.max(12, window.innerWidth - panelWidth - 12);
     const maxY = Math.max(12, window.innerHeight - panelHeight - 12);
     const nextX = Math.min(maxX, Math.max(12, event.clientX - dragRef.current.offsetX));
@@ -359,7 +423,7 @@ export default function App() {
   const isLoginRoom = room.id === "login";
   const isRecordRoom = room.id === "record";
   const isArchiveRoom = room.id === "archive";
-  const canShare = isLoggedIn && note.trim().length > 0;
+  const hasNote = note.trim().length > 0;
 
   const publishedEntries = archiveInbox.filter((entry) => publishedIds.includes(entry.id));
   const filteredPublished = publishedEntries.filter((entry) => {
@@ -379,6 +443,12 @@ export default function App() {
       </div>
 
       <DoorPortal closed={doorsClosed} />
+
+      {mailFeedback ? (
+        <div className={`mail-toast mail-toast-${mailFeedback.type}`} role="alert" aria-live="polite">
+          {mailFeedback.message}
+        </div>
+      ) : null}
 
       <main className={`stage ${popupEnabled ? "stage-expanded-foot" : ""}`}>
         <div className="grid-scaffold" aria-hidden="true">
@@ -461,13 +531,22 @@ export default function App() {
                           </div>
                           <p className="archive-card-note">{entry.note}</p>
                           {isLoggedIn ? (
-                            <button
-                              type="button"
-                              className="record-mini-btn archive-unpublish"
-                              onClick={() => handleUnpublishArchive(entry.id)}
-                            >
-                              게시 취소
-                            </button>
+                            <div className="archive-card-actions">
+                              <button
+                                type="button"
+                                className="record-mini-btn archive-unpublish"
+                                onClick={() => handleUnpublishArchive(entry.id)}
+                              >
+                                게시 취소
+                              </button>
+                              <button
+                                type="button"
+                                className="record-mini-btn archive-delete"
+                                onClick={() => handleDeleteArchive(entry.id)}
+                              >
+                                삭제
+                              </button>
+                            </div>
                           ) : null}
                         </li>
                       ))}
@@ -479,7 +558,7 @@ export default function App() {
                   <div className="archive-admin">
                     <h2 className="archive-subtitle">접수함 · 관리자 선별</h2>
                     <p className="archive-admin-note">
-                      메일 전송 버튼으로 접수된 기록이 여기에 쌓입니다. 게시할 항목만 보관소에 올리세요.
+                      관리자 전송 버튼으로 접수된 기록이 여기에 쌓입니다. 게시할 항목만 보관소에 올리세요.
                     </p>
                     {pendingEntries.length === 0 ? (
                       <p className="archive-empty">선별 대기 중인 새 접수가 없습니다.</p>
@@ -494,13 +573,22 @@ export default function App() {
                               </time>
                             </div>
                             <p className="archive-card-note">{entry.note}</p>
-                            <button
-                              type="button"
-                              className="record-mini-btn"
-                              onClick={() => handlePublishArchive(entry.id)}
-                            >
-                              보관소에 게시
-                            </button>
+                            <div className="archive-card-actions">
+                              <button
+                                type="button"
+                                className="record-mini-btn"
+                                onClick={() => handlePublishArchive(entry.id)}
+                              >
+                                보관소에 게시
+                              </button>
+                              <button
+                                type="button"
+                                className="record-mini-btn archive-delete"
+                                onClick={() => handleDeleteArchive(entry.id)}
+                              >
+                                삭제
+                              </button>
+                            </div>
                           </li>
                         ))}
                       </ul>
@@ -541,46 +629,48 @@ export default function App() {
 
             {isRecordRoom ? (
               <section className="record-sheet">
-                {!isLoggedIn ? (
-                  <div className="record-auth">
-                    <p className="record-label">기록지는 별도 로그인 화면에서 입실할 수 있습니다.</p>
-                    <button type="button" className="portal record-action" onClick={goToLogin}>
-                      <span className="portal-label">로그인 화면으로</span>
-                      <span className="portal-hint">입실 절차로 이동</span>
+                <div className="record-inline-head">
+                  <p className="record-label">떠오른 문장을 자유롭게 남겨 보세요.</p>
+                  {isLoggedIn ? (
+                    <button type="button" className="record-mini-btn" onClick={handleLogout}>
+                      로그아웃
                     </button>
-                  </div>
-                ) : (
-                  <>
-                    <div className="record-inline-head">
-                      <p className="record-label">떠오른 문장을 자유롭게 남겨 보세요.</p>
-                      <button type="button" className="record-mini-btn" onClick={handleLogout}>
-                        로그아웃
-                      </button>
-                    </div>
-                    <input
-                      className="record-input-line"
-                      type="text"
-                      placeholder="닉네임"
-                      value={nickname}
-                      onChange={(event) => setNickname(event.target.value)}
-                    />
-                    <textarea
-                      id="record-note"
-                      className="record-input"
-                      placeholder="이 방에서 떠오른 생각을 적어 보세요..."
-                      value={note}
-                      onChange={(event) => setNote(event.target.value)}
-                    />
-                    <div className="record-share-row">
-                      <button type="button" className="record-mini-btn" onClick={shareToKakao} disabled={!canShare}>
-                        카카오톡으로 공유
-                      </button>
-                      <button type="button" className="record-mini-btn" onClick={sendMailToAdmin} disabled={!canShare}>
-                        관리자 메일 전송
-                      </button>
-                    </div>
-                  </>
-                )}
+                  ) : null}
+                </div>
+                <input
+                  className="record-input-line"
+                  type="text"
+                  placeholder="닉네임 (선택)"
+                  value={nickname}
+                  onChange={(event) => setNickname(event.target.value)}
+                />
+                <textarea
+                  id="record-note"
+                  className="record-input"
+                  placeholder="이 방에서 떠오른 생각을 적어 보세요..."
+                  value={note}
+                  onChange={(event) => setNote(event.target.value)}
+                />
+                <p className="record-share-hint">
+                  {isLoggedIn
+                    ? "공유·전송이 가능합니다."
+                    : "카카오톡 공유·관리자 전송은 로그인 후 이용할 수 있습니다."}
+                </p>
+                <div className="record-share-row">
+                  {!isLoggedIn ? (
+                    <button type="button" className="record-mini-btn record-login-link" onClick={goToLogin}>
+                      로그인
+                    </button>
+                  ) : null}
+                  <button type="button" className="record-mini-btn record-icon-btn" onClick={shareToKakao} disabled={!hasNote}>
+                    <img src="/icon-kakao.png" alt="" className="record-btn-icon" width={18} height={18} />
+                    <span>카카오톡으로 공유</span>
+                  </button>
+                  <button type="button" className="record-mini-btn record-icon-btn" onClick={sendMailToAdmin} disabled={!hasNote}>
+                    <img src="/icon-send.png" alt="" className="record-btn-icon" width={18} height={18} />
+                    <span>관리자에게 전송</span>
+                  </button>
+                </div>
               </section>
             ) : null}
 
@@ -599,10 +689,10 @@ export default function App() {
                   </button>
                 ) : (
                   <>
-                    <button type="button" className="portal" onClick={openRecordPopup} disabled={isBusy}>
+                    <button type="button" className="portal" onClick={goToRecord} disabled={isBusy}>
                       <span className="portal-arch" />
                       <span className="portal-label">기록지로..</span>
-                      <span className="portal-hint">생각을 남깁니다</span>
+                      <span className="portal-hint">기록지 페이지로 이동</span>
                     </button>
                     <button
                       type="button"
@@ -624,11 +714,11 @@ export default function App() {
                   className="portal"
                   onClick={
                     room.id === "record"
-                      ? advance
+                      ? goToArchive
                       : room.id === "archive"
                         ? goToFirst
                         : room.id === "login"
-                          ? handleLoginAndEnterRecord
+                          ? goToRecord
                           : advance
                   }
                   disabled={isBusy}
@@ -657,18 +747,21 @@ export default function App() {
                 className="record-popup"
                 style={{ left: `${popupPosition.x}px`, top: `${popupPosition.y}px` }}
               >
-                <div
-                  className="record-popup-head"
-                  onPointerDown={onPopupDragStart}
-                  onPointerMove={onPopupDragMove}
-                  onPointerUp={onPopupDragEnd}
-                  onPointerCancel={onPopupDragEnd}
-                >
-                  <span>기록지 · 자유 메모</span>
+                <div className="record-popup-head">
+                  <div
+                    className="record-popup-drag"
+                    onPointerDown={onPopupDragStart}
+                    onPointerMove={onPopupDragMove}
+                    onPointerUp={onPopupDragEnd}
+                    onPointerCancel={onPopupDragEnd}
+                  >
+                    <span>기록지 · 자유 메모</span>
+                  </div>
                   <button
                     type="button"
                     className="record-popup-close"
-                    onClick={() => setRecordPopupOpen(false)}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={closeRecordPopup}
                   >
                     닫기
                   </button>
@@ -676,41 +769,43 @@ export default function App() {
                 <textarea
                   className="record-input popup"
                   placeholder="이동 중에도 떠오른 생각을 적어 보세요..."
-                  disabled={!isLoggedIn}
                   value={note}
                   onChange={(event) => setNote(event.target.value)}
                 />
-                {!isLoggedIn ? (
-                  <div className="record-popup-guide-wrap">
-                    <p className="record-popup-guide">로그인 후 팝업에서도 기록을 이어 쓸 수 있습니다.</p>
-                    <button type="button" className="record-mini-btn" onClick={goToLogin}>
-                      로그인 화면으로
+                <p className="record-popup-guide">
+                  {isLoggedIn
+                    ? "닫기 후에도 다른 방을 보며 이어 쓸 수 있습니다."
+                    : "공유 및 전송은 로그인이 필요합니다."}
+                </p>
+                <div className="record-share-row popup">
+                  {!isLoggedIn ? (
+                    <button type="button" className="record-mini-btn record-login-link" onClick={goToLogin}>
+                      로그인
                     </button>
-                  </div>
-                ) : (
-                  <div className="record-share-row popup">
-                    <button type="button" className="record-mini-btn" onClick={shareToKakao} disabled={!canShare}>
-                      카카오톡으로 공유
-                    </button>
-                    <button type="button" className="record-mini-btn" onClick={sendMailToAdmin} disabled={!canShare}>
-                      메일 전송
-                    </button>
-                  </div>
-                )}
+                  ) : null}
+                  <button type="button" className="record-mini-btn record-icon-btn" onClick={shareToKakao} disabled={!hasNote}>
+                    <img src="/icon-kakao.png" alt="" className="record-btn-icon" width={18} height={18} />
+                    <span>카카오톡으로 공유</span>
+                  </button>
+                  <button type="button" className="record-mini-btn record-icon-btn" onClick={sendMailToAdmin} disabled={!hasNote}>
+                    <img src="/icon-send.png" alt="" className="record-btn-icon" width={18} height={18} />
+                    <span>관리자에게 전송</span>
+                  </button>
+                </div>
               </section>
             ) : null}
           </>
         ) : null}
 
-        <footer className={`foot ${popupEnabled ? "foot-with-nav" : ""}`}>
-          <div className="foot-row">
-            <span className="foot-plant" aria-hidden="true" />
-            <span className="foot-counter">
-              {index + 1} / {ROOMS.length}
-            </span>
-            <span className="foot-sphere" aria-hidden="true" />
-          </div>
-          {popupEnabled ? (
+        {popupEnabled ? (
+          <footer className="foot foot-with-nav">
+            <div className="foot-row">
+              <span className="foot-plant" aria-hidden="true" />
+              <span className="foot-counter">
+                {index + 1} / {ROOMS.length}
+              </span>
+              <span className="foot-sphere" aria-hidden="true" />
+            </div>
             <div className="foot-nav">
               <label className="foot-nav-label" htmlFor="page-jump">
                 이동
@@ -729,8 +824,8 @@ export default function App() {
                 ))}
               </select>
             </div>
-          ) : null}
-        </footer>
+          </footer>
+        ) : null}
       </main>
     </div>
   );

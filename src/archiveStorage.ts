@@ -63,3 +63,8 @@ export function publishEntry(id: string) {
 export function unpublishEntry(id: string) {
   savePublishedIds(loadPublishedIds().filter((x) => x !== id));
 }
+
+export function deleteEntry(id: string) {
+  saveInbox(loadInbox().filter((entry) => entry.id !== id));
+  unpublishEntry(id);
+}
